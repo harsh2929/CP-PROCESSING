@@ -1,63 +1,57 @@
-import emd
 import time
 import numpy as np
 import torch
 from torch import nn
 from torch.autograd import Function
+from torch.cuda.amp import autocast
 
+from emd import emd
 
-
-
-
-class emdFunction(Function):
+class EmdFunction(Function):
+    """
+    PyTorch autograd Function wrapper for the emd CUDA extension
+    """
     @staticmethod
     def forward(ctx, da1, dda2, eps, iters):
+        with torch.cuda.amp.autocast():
+            batchsize, n, _ = da1.size()
+            _, m, _ = dda2.size()
 
-        batchsize, n, _ = da1.size()
-        _, m, _ = dda2.size()
+            assert(n == m)
+            assert(da1.size()[0] == dda2.size()[0])
+            assert(n % 1024 == 0)
+            assert(batchsize <= 512)
 
-        assert(n == m)
-        assert(da1.size()[0] == dda2.size()[0])
-        assert(n % 1024 == 0)
-        assert(batchsize <= 512)
+            device = da1.device
+            dist = torch.zeros(batchsize, n, device=device)
+            assignment = -torch.ones(batchsize, n, device=device, dtype=torch.int32)
+            assignment_inv = -torch.ones(batchsize, m, device=device, dtype=torch.int32)
+            price = torch.zeros(batchsize, m, device=device)
+            bid = torch.zeros(batchsize, n, device=device, dtype=torch.int32)
+            bid_increments = torch.zeros(batchsize, n, device=device)
+            max_increments = torch.zeros(batchsize, m, device=device)
+            unass_idx = torch.zeros(batchsize * n, device=device, dtype=torch.int32)
+            max_idx = torch.zeros(batchsize * m, device=device, dtype=torch.int32)
+            unass_cnt = torch.zeros(512, dtype=torch.int32, device=device)
+            unass_cnt_sum = torch.zeros(512, dtype=torch.int32, device=device)
+            cnt_tmp = torch.zeros(512, dtype=torch.int32, device=device)
 
-        da1 = da1.contiguous().float().cuda()
-        dda2 = dda2.contiguous().float().cuda()
-        dist = torch.zeros(batchsize, n, device='cuda').contiguous()
-        assignment = torch.zeros(batchsize, n, device='cuda', dtype=torch.int32).contiguous() - 1
-        assignment_inv = torch.zeros(batchsize, m, device='cuda', dtype=torch.int32).contiguous() - 1
-        price = torch.zeros(batchsize, m, device='cuda').contiguous()
-        bid = torch.zeros(batchsize, n, device='cuda', dtype=torch.int32).contiguous()
-        bid_increments = torch.zeros(batchsize, n, device='cuda').contiguous()
-        max_increments = torch.zeros(batchsize, m, device='cuda').contiguous()
-        unass_idx = torch.zeros(batchsize * n, device='cuda', dtype=torch.int32).contiguous()
-        max_idx = torch.zeros(batchsize * m, device='cuda', dtype=torch.int32).contiguous()
-        unass_cnt = torch.zeros(512, dtype=torch.int32, device='cuda').contiguous()
-        unass_cnt_sum = torch.zeros(512, dtype=torch.int32, device='cuda').contiguous()
-        cnt_tmp = torch.zeros(512, dtype=torch.int32, device='cuda').contiguous()
-
-        emd.forward(da1, dda2, dist, assignment, price, assignment_inv, bid, bid_increments, max_increments, unass_idx, unass_cnt, unass_cnt_sum, cnt_tmp, max_idx, eps, iters)
+            emd.forward(da1.float(), dda2.float(), dist, assignment, price, assignment_inv, bid,
+                        bid_increments, max_increments, unass_idx, unass_cnt, unass_cnt_sum,
+                        cnt_tmp, max_idx, eps, iters)
 
         ctx.save_for_backward(da1, dda2, assignment)
         return dist, assignment
 
     @staticmethod
     def backward(ctx, graddist, gradidx):
-        da1, dda2, assignment = ctx.saved_tensors
-        graddist = graddist.contiguous()
+        with torch.cuda.amp.autocast():
+            da1, dda2, assignment = ctx.saved_tensors
+            gradda1 = torch.zeros(da1.size(), device=da1.device)
+            graddda2 = torch.zeros(dda2.size(), device=dda2.device)
 
-        gradda1 = torch.zeros(da1.size(), device='cuda').contiguous()
-        graddda2 = torch.zeros(dda2.size(), device='cuda').contiguous()
-
-        emd.backward(da1, dda2, gradda1, graddist, assignment)
+            emd.backward(da1.float(), dda2.float(), gradda1, graddist, assignment)
         return gradda1, graddda2, None, None
-
-class emdModule(nn.Module):
-    def __init__(self):
-        super(emdModule, self).__init__()
-
-    def forward(self, input1, input2, eps, iters):
-        return emdFunction.apply(input1, input2, eps, iters)
 
 def test_emd():
     x1 = torch.rand(20, 8192, 3).cuda() # please normalize your point cloud to [0, 1]
