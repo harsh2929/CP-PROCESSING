@@ -4,42 +4,54 @@ import numpy as np
 import torch.utils.data as data
 import torchvision.transforms as transforms
 import os
-import random
-#from utils import *
 
-def resample_pcd(pcd, n):
-    """Drop or duplicate points so that pcd has exactly n points"""
-    idx = np.random.permutation(pcd.shape[0])
-    if idx.shape[0] < n:
-        idx = np.concatenate([idx, np.random.randint(pcd.shape[0], size = n - pcd.shape[0])])
-    return pcd[idx[:n]]
-           
-class ShapeNet(data.Dataset): 
-    def __init__(self, train = True, npoints = 8192):
-        if train:
-            self.list_path = './data/train.list'
-        else:
-            self.list_path = './data/val.list'
-        self.npoints = npoints
+class ShapeNetDataset(data.Dataset):
+
+    def __init__(self, train=True, npoints=8192):
         self.train = train
+        self.npoints = npoints
 
-        with open(os.path.join(self.list_path)) as file:
-            self.model_list = [line.strip().replace('/', '_') for line in file]
-        random.shuffle(self.model_list)
-        self.len = len(self.model_list * 50)
+        if train:
+            list_path = './data/train.list'
+        else:
+            list_path = './data/val.list'
+
+        with open(list_path) as f:
+            self.model_list = [line.strip().replace('/', '_') for line in f]
+
+        self.indices = torch.randperm(len(self.model_list) * 50)
+        self.len = len(self.indices)
 
     def __getitem__(self, index):
-        model_id = self.model_list[index // 50]
-        scan_id = index % 50
+        model_id = self.model_list[self.indices[index] // 50]
+        scan_id = self.indices[index] % 50
+
         def read_pcd(filename):
-            pcd = o3d.io.read_point_cloud(filename)
-            return torch.from_numpy(np.array(pcd.points)).float()
+            try:
+                pcd = o3d.io.read_point_cloud(filename)
+                return torch.from_numpy(np.array(pcd.points)).float()
+            except:
+                return None
+
         if self.train:
-            partial = read_pcd(os.path.join("./data/train/", model_id + '_%d_denoised.pcd' % scan_id))
+            partial = read_pcd(f"./data/train/{model_id}_{scan_id}_denoised.pcd")
         else:
-            partial = read_pcd(os.path.join("./data/val/", model_id + '_%d_denoised.pcd' % scan_id))
-        complete = read_pcd(os.path.join("./data/complete/", '%s.pcd' % model_id))       
-        return model_id, resample_pcd(partial, 5000), resample_pcd(complete, self.npoints)
+            partial = read_pcd(f"./data/val/{model_id}_{scan_id}_denoised.pcd")
+
+        complete = read_pcd(f"./data/complete/{model_id}.pcd")
+
+        if partial is None or complete is None:
+            return None
+
+        return model_id, ShapeNetDataset.resample_pcd(partial, 5000), ShapeNetDataset.resample_pcd(complete, self.npoints)
 
     def __len__(self):
         return self.len
+
+    @staticmethod
+    def resample_pcd(pcd, n):
+
+        idx = np.random.permutation(pcd.shape[0])
+        if idx.shape[0] < n:
+            idx = np.concatenate([idx, np.random.randint(pcd.shape[0], size=n - pcd.shape[0])])
+        return pcd[idx[:n]]
