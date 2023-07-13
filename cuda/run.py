@@ -4,7 +4,7 @@ from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 setup(
     name='emd',
     version='1.0.0',
-    author='Your Name',
+    author='Harsh',
     author_email='your.email@example.com',
     description='Earth Mover\'s Distance implementation using PyTorch and CUDA',
     long_description='A PyTorch implementation of the Earth Mover\'s Distance (EMD) algorithm using CUDA for GPU acceleration.',
